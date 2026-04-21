@@ -31,7 +31,7 @@ grep '^VERCEL_TOKEN=' .env 2>/dev/null
 If found, export it:
 
 ```bash
-export VERCEL_TOKEN=$(grep '^VERCEL_TOKEN=' .env | cut -d= -f2-)
+export VERCEL_TOKEN=$(grep -E '^VERCEL_TOKEN\s*=' .env | sed -E 's/^VERCEL_TOKEN\s*=\s*//' | sed -E "s/^['\"](.+)['\"]$/\1/" | tr -d '\r')
 ```
 
 ### C) Token is in a `.env` file under a different name
@@ -45,7 +45,7 @@ grep -i 'vercel' .env 2>/dev/null
 Inspect the output to identify which variable holds the token, then export it as `VERCEL_TOKEN`:
 
 ```bash
-export VERCEL_TOKEN=$(grep '^<VARIABLE_NAME>=' .env | cut -d= -f2-)
+export VERCEL_TOKEN=$(grep -E '^<VARIABLE_NAME>\s*=' .env | sed -E 's/^<VARIABLE_NAME>\s*=\s*//' | sed -E "s/^['\"](.+)['\"]$/\1/" | tr -d '\r')
 ```
 
 ### D) No token found — ask the user

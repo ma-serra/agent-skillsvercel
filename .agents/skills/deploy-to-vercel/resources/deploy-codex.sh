@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-DEPLOY_ENDPOINT="https://codex-deploy-skills.vercel.sh/api/deploy"
+DEPLOY_ENDPOINT="${DEPLOY_ENDPOINT:-https://codex-deploy-skills.vercel.sh/api/deploy}"
 
 # Detect framework from package.json
 detect_framework() {
@@ -17,17 +17,26 @@ detect_framework() {
         return
     fi
 
-    local content=$(cat "$pkg_json")
-
-    # Helper to check if a package exists in dependencies or devDependencies.
-    # Use exact matching by default, with a separate prefix matcher for scoped
-    # package families like "@remix-run/".
     has_dep_exact() {
-        echo "$content" | grep -q "\"$1\""
+        python3 -c "
+import json, sys
+try:
+    pkg = json.load(open(sys.argv[1]))
+    deps = {**pkg.get('dependencies', {}), **pkg.get('devDependencies', {})}
+    sys.exit(0 if sys.argv[2] in deps else 1)
+except: sys.exit(1)
+" "$pkg_json" "$1" 2>/dev/null
     }
 
     has_dep_prefix() {
-        echo "$content" | grep -q "\"$1"
+        python3 -c "
+import json, sys
+try:
+    pkg = json.load(open(sys.argv[1]))
+    deps = {**pkg.get('dependencies', {}), **pkg.get('devDependencies', {})}
+    sys.exit(0 if any(k.startswith(sys.argv[2]) for k in deps) else 1)
+except: sys.exit(1)
+" "$pkg_json" "$1" 2>/dev/null
     }
 
     # Order matters - check more specific frameworks first
@@ -164,14 +173,12 @@ detect_framework() {
 # Parse arguments
 INPUT_PATH="${1:-.}"
 
-# Create temp directory for packaging
-TEMP_DIR=$(mktemp -d)
-TARBALL="$TEMP_DIR/project.tgz"
-STAGING_DIR="$TEMP_DIR/staging"
-CLEANUP_TEMP=true
+TEMP_DIR=""
+TARBALL=""
+STAGING_DIR=""
 
 cleanup() {
-    if [ "$CLEANUP_TEMP" = true ]; then
+    if [ -n "$TEMP_DIR" ]; then
         rm -rf "$TEMP_DIR"
     fi
 }
@@ -186,10 +193,12 @@ if [ -f "$INPUT_PATH" ] && [[ "$INPUT_PATH" == *.tgz ]]; then
     # Input is already a tarball, use it directly
     echo "Using provided tarball..." >&2
     TARBALL="$INPUT_PATH"
-    CLEANUP_TEMP=false
     # Can't detect framework from tarball, leave as null
 elif [ -d "$INPUT_PATH" ]; then
     # Input is a directory, need to tar it
+    TEMP_DIR=$(mktemp -d)
+    TARBALL="$TEMP_DIR/project.tgz"
+    STAGING_DIR="$TEMP_DIR/staging"
     PROJECT_PATH=$(cd "$INPUT_PATH" && pwd)
 
     # Detect framework from package.json
@@ -239,15 +248,15 @@ echo "Deploying..." >&2
 RESPONSE=$(curl -s -X POST "$DEPLOY_ENDPOINT" -F "file=@$TARBALL" -F "framework=$FRAMEWORK")
 
 # Check for error in response
-if echo "$RESPONSE" | grep -q '"error"'; then
-    ERROR_MSG=$(echo "$RESPONSE" | grep -o '"error":"[^"]*"' | cut -d'"' -f4)
+ERROR_MSG=$(echo "$RESPONSE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('error',''))" 2>/dev/null) || true
+if [ -n "$ERROR_MSG" ]; then
     echo "Error: $ERROR_MSG" >&2
     exit 1
 fi
 
 # Extract URLs from response
-PREVIEW_URL=$(echo "$RESPONSE" | grep -o '"previewUrl":"[^"]*"' | cut -d'"' -f4)
-CLAIM_URL=$(echo "$RESPONSE" | grep -o '"claimUrl":"[^"]*"' | cut -d'"' -f4)
+PREVIEW_URL=$(echo "$RESPONSE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('previewUrl',''))" 2>/dev/null) || true
+CLAIM_URL=$(echo "$RESPONSE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('claimUrl',''))" 2>/dev/null) || true
 
 if [ -z "$PREVIEW_URL" ]; then
     echo "Error: Could not extract preview URL from response" >&2
