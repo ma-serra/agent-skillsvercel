@@ -2,12 +2,7 @@
 set -e
 
 FILE="${1:-}"
-LANG="${2:-pt-BR}"
-
-cleanup() {
-  rm -f /tmp/advogado-analyze-$$.tmp 2>/dev/null || true
-}
-trap cleanup EXIT
+export ADVOGADO_LANG="${2:-pt-BR}"
 
 if [[ -z "$FILE" ]]; then
   echo '{"error":"Missing file argument. Usage: analyze-document.sh <file> [lang]"}' >&2
@@ -19,54 +14,62 @@ if [[ ! -f "$FILE" ]]; then
   exit 1
 fi
 
+export ADVOGADO_FILE="$FILE"
 EXT="${FILE##*.}"
 echo "Reading document: $FILE (.$EXT)..." >&2
 
+TMP_CONTENT=$(mktemp /tmp/advogado-analyze-XXXXXX.tmp)
+cleanup() { rm -f "$TMP_CONTENT" 2>/dev/null || true; }
+trap cleanup EXIT
+
 case "$EXT" in
   txt|md|markdown)
-    CONTENT=$(cat "$FILE")
+    cat "$FILE" > "$TMP_CONTENT"
     ;;
   pdf)
     if command -v pdftotext &>/dev/null; then
-      CONTENT=$(pdftotext "$FILE" - 2>/dev/null)
+      pdftotext "$FILE" - 2>/dev/null > "$TMP_CONTENT"
     else
       echo '{"error":"pdftotext not found. Install poppler-utils to analyze PDF files, or convert to .txt first."}' >&2
       exit 1
     fi
     ;;
   *)
-    CONTENT=$(cat "$FILE" 2>/dev/null || true)
-    if [[ -z "$CONTENT" ]]; then
+    cat "$FILE" 2>/dev/null > "$TMP_CONTENT" || true
+    if [[ ! -s "$TMP_CONTENT" ]]; then
       echo "{\"error\":\"Unsupported file type: .$EXT. Use .txt, .md, or .pdf.\"}" >&2
       exit 1
     fi
     ;;
 esac
 
-WORD_COUNT=$(echo "$CONTENT" | wc -w)
-LINE_COUNT=$(echo "$CONTENT" | wc -l)
-CHAR_COUNT=${#CONTENT}
+export ADVOGADO_WORD_COUNT=$(wc -w < "$TMP_CONTENT")
+export ADVOGADO_LINE_COUNT=$(wc -l < "$TMP_CONTENT")
+export ADVOGADO_CONTENT_FILE="$TMP_CONTENT"
 
-echo "Document stats: $WORD_COUNT words, $LINE_COUNT lines" >&2
+echo "Document stats: $ADVOGADO_WORD_COUNT words, $ADVOGADO_LINE_COUNT lines" >&2
 
-if [[ "$LANG" == "pt-BR" ]]; then
-  DISCLAIMER="Esta análise é informativa e não constitui aconselhamento jurídico. Consulte um advogado licenciado para orientação jurídica."
-  SUMMARY_NOTE="Análise automática do documento"
+if [[ "$ADVOGADO_LANG" == "pt-BR" ]]; then
+  export ADVOGADO_DISCLAIMER="Esta análise é informativa e não constitui aconselhamento jurídico. Consulte um advogado licenciado para orientação jurídica."
+  export ADVOGADO_SUMMARY_NOTE="Análise automática do documento"
 else
-  DISCLAIMER="This analysis is informational and does not constitute legal advice. Consult a licensed attorney for legal guidance."
-  SUMMARY_NOTE="Automated document analysis"
+  export ADVOGADO_DISCLAIMER="This analysis is informational and does not constitute legal advice. Consult a licensed attorney for legal guidance."
+  export ADVOGADO_SUMMARY_NOTE="Automated document analysis"
 fi
 
-python3 - <<PYEOF
-import json, re, sys
+python3 <<'PYEOF'
+import json, re, os
 
-content = """$CONTENT"""
-lang = "$LANG"
-file_path = "$FILE"
-word_count = $WORD_COUNT
-line_count = $LINE_COUNT
+lang = os.environ['ADVOGADO_LANG']
+file_path = os.environ['ADVOGADO_FILE']
+word_count = int(os.environ['ADVOGADO_WORD_COUNT'])
+line_count = int(os.environ['ADVOGADO_LINE_COUNT'])
+disclaimer = os.environ['ADVOGADO_DISCLAIMER']
+summary_note = os.environ['ADVOGADO_SUMMARY_NOTE']
 
-# Heuristic clause detection
+with open(os.environ['ADVOGADO_CONTENT_FILE'], encoding='utf-8', errors='replace') as f:
+    content = f.read()
+
 clause_patterns_ptbr = [
     r'(?i)\b(cl[aá]usula|art(?:igo)?\.?\s*\d+|§\s*\d+)\b',
     r'(?i)\b(objeto|prazo|vig[eê]ncia|remunera[cç][aã]o|pagamento|rescis[aã]o|foro|penalidade|multa|obriga[cç][aã]o|confidencialidade|sigilo|propriedade intelectual)\b'
@@ -80,18 +83,15 @@ patterns = clause_patterns_ptbr if lang == "pt-BR" else clause_patterns_enus
 
 found_topics = set()
 for pattern in patterns:
-    matches = re.findall(pattern, content)
-    for m in matches:
+    for m in re.findall(pattern, content):
         if isinstance(m, tuple):
             found_topics.update(t.strip().lower() for t in m if t.strip())
         else:
             found_topics.add(m.strip().lower())
 
-clauses = sorted(list(found_topics))[:20]
+clauses = sorted(found_topics)[:20]
 
-# Heuristic risk detection
 risks = []
-
 if lang == "pt-BR":
     if re.search(r'(?i)(prazo\s+indeterminado|sem\s+prazo\s+definido)', content):
         risks.append({"severity": "medium", "description": "Contrato sem prazo definido — pode gerar insegurança jurídica."})
@@ -135,15 +135,12 @@ else:
 result = {
     "file": file_path,
     "lang": lang,
-    "stats": {
-        "words": word_count,
-        "lines": line_count
-    },
-    "summary": "$SUMMARY_NOTE" + f" — {word_count} words, {len(clauses)} key topics detected.",
-    "detected_topics": clauses,
+    "stats": {"words": word_count, "lines": line_count},
+    "summary": f"{summary_note} — {word_count} words, {len(clauses)} key topics detected.",
+    "clauses": clauses,
     "risks": risks,
     "suggestions": suggestions,
-    "disclaimer": "$DISCLAIMER"
+    "disclaimer": disclaimer
 }
 
 print(json.dumps(result, ensure_ascii=False, indent=2))
