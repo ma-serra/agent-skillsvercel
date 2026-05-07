@@ -1,0 +1,10 @@
+{
+  "name": "agent-skillsvercel",
+  "version": "1.0.0",
+  "description": "A collection of skills for AI coding agents",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.95.0",
+    "@superdoc-dev/sdk": "^1.8.1"
+  }
+}
