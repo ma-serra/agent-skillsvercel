@@ -41,7 +41,13 @@ export function createAppState() {
     items = items.filter(i => i.id !== id); // ✅ filter returns new array
   }
 
-  return { get items() { return items; }, count, loading, addItem, removeItem };
+  return {
+    get items() { return items; },
+    get count() { return count; },
+    get loading() { return loading; },
+    addItem,
+    removeItem,
+  };
 }
 
 export const appState = createAppState();
